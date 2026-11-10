@@ -141,6 +141,21 @@
 - [ ] **Step 2: Verify** manually: add a temp folder to the collector → reclaimable size matches; "Move to Trash" removes it and it appears in `~/.Trash`; attempt to add `~/Library` and delete → refused dialog; search `pom` finds files; scanning `/` shows the FDA banner without Full Disk Access.
 - [ ] **Step 3: Commit** `feat(ui): search, collector, caches, FDA banner`.
 
+### Task 9: `analyzer-cli` module (added after plan approval, per user request "analyzer cmd ... command line, use a rich cli lib")
+
+**Files:**
+- Create: `analyzer-cli/pom.xml` (add `<module>analyzer-cli</module>` to parent; deps: `analyzer-core`, `info.picocli:picocli:4.7.6`; `maven-shade-plugin` 3.6.0 producing an executable jar with `Main-Class dev.diskanalyzer.cli.Main`)
+- Create: `analyzer-cli/src/main/java/dev/diskanalyzer/cli/Main.java`, `ScanCommand.java`, `TopCommand.java`, `SearchCommand.java`, `CachesCommand.java`, `Render.java`
+- Test: `analyzer-cli/src/test/java/dev/diskanalyzer/cli/CliTest.java`
+
+**Interfaces:**
+- Consumes: `DiskScanner`, `SearchIndex`, `CacheCatalog`, `FileNode.human`.
+- Produces: picocli root `analyzer` with subcommands `scan <path> [--depth N] [--top N] [--no-color]` (colored size-bar tree to depth N), `top <path> [--files|--dirs] [-n N]` (largest entries), `search <path> <query> [-n N]`, `caches` (existing dev caches with sizes). `Render` is pure (`String` out, ANSI via `picocli.CommandLine.Help.Ansi`) so tests assert on strings. Exit code 0 ok, 2 on bad path. Live progress line on stderr only when `System.console() != null`.
+
+- [ ] **Step 1: Tests** (`CliTest`, run via `new CommandLine(new Main()).execute(...)` with captured out/err and `--no-color`): `scanPrintsTreeWithSizesAndBars` (temp tree 10B/20B → output lists both dirs, larger first, contains `20 B`), `scanRespectsDepth`, `topListsLargestFirst`, `searchFindsByName`, `badPathExitsTwo`, `noColorHasNoEscapeCodes`.
+- [ ] **Step 2:** `mvn -q test -pl analyzer-cli -am` → FAIL. **Step 3:** implement. **Step 4:** PASS; manual `java -jar analyzer-cli/target/analyzer-cli-*.jar scan ~/Downloads`.
+- [ ] **Step 5: Commit** `feat(cli): picocli analyzer command`.
+
 ### Task 8: Housekeeping
 
 **Files:**

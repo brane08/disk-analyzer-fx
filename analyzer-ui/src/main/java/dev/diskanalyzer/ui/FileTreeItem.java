@@ -1,4 +1,6 @@
-package dev.diskanalyzer;
+package dev.diskanalyzer.ui;
+
+import dev.diskanalyzer.core.FileNode;
 
 import javafx.collections.ObservableList;
 import javafx.scene.control.TreeItem;

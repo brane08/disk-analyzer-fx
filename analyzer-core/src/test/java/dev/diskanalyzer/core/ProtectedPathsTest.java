@@ -2,6 +2,7 @@ package dev.diskanalyzer.core;
 
 import org.junit.jupiter.api.Test;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -76,5 +77,71 @@ class ProtectedPathsTest {
                 "/Users/tester/.npm", "/Applications/Foo.app", "/tmp/anything"}) {
             assertFalse(pp.isProtected(Path.of(p)), p);
         }
+    }
+
+    @Test
+    void linuxHomeUnderVarIsNotSwallowedByVarTree() {
+        org.junit.jupiter.api.Assumptions.assumeTrue(Path.of("/").toString().equals("/"));
+        ProtectedPaths linux = new ProtectedPaths(Path.of("/var/home/me"), Os.LINUX);
+        assertTrue(linux.isProtected(Path.of("/var/home/me")));
+        assertTrue(linux.isProtected(Path.of("/var/home/me/.config")));
+        assertTrue(linux.isProtected(Path.of("/var/lib/x")));
+        assertFalse(linux.isProtected(Path.of("/var/home/me/Downloads/x")));
+        assertFalse(linux.isProtected(Path.of("/var/home/me/.cache/pip")));
+    }
+
+    @Test
+    void realHomePathIsProtected(@org.junit.jupiter.api.io.TempDir Path tmp) throws Exception {
+        Path realHome = tmp.resolve("realHome");
+        Files.createDirectories(realHome);
+        Path linkHome = Files.createSymbolicLink(tmp.resolve("linkHome"), realHome);
+
+        ProtectedPaths linked = new ProtectedPaths(linkHome, Os.LINUX);
+
+        assertTrue(linked.isProtected(realHome));
+        assertTrue(linked.isProtected(linkHome));
+        assertFalse(linked.isProtected(realHome.resolve("Downloads/x")));
+    }
+
+    @Test
+    void linuxRunMediaContentIsNotProtected() {
+        org.junit.jupiter.api.Assumptions.assumeTrue(Path.of("/").toString().equals("/"));
+        ProtectedPaths linux = new ProtectedPaths(Path.of("/home/tester"), Os.LINUX);
+        assertTrue(linux.isProtected(Path.of("/run")));
+        assertFalse(linux.isProtected(Path.of("/run/media/user/disk/file")));
+    }
+
+    @Test
+    void macSensitiveLibraryFoldersAreProtected() {
+        for (String p : new String[] {
+                "/Users/tester/Library/Application Support",
+                "/Users/tester/Library/Keychains",
+                "/Users/tester/Library/Mail",
+                "/Users/tester/Library/Messages",
+                "/Users/tester/Library/Containers",
+                "/Volumes",
+                "/private"}) {
+            assertTrue(pp.isProtected(Path.of(p)), p);
+        }
+        assertFalse(pp.isProtected(Path.of("/private/tmp/scratch")));
+        assertFalse(pp.isProtected(Path.of("/Volumes/USB/photo.jpg")));
+    }
+
+    @Test
+    void linuxSrvSnapNixAreProtected() {
+        org.junit.jupiter.api.Assumptions.assumeTrue(Path.of("/").toString().equals("/"));
+        ProtectedPaths linux = new ProtectedPaths(Path.of("/home/tester"), Os.LINUX);
+        for (String p : new String[] {"/srv", "/snap", "/nix"}) {
+            assertTrue(linux.isProtected(Path.of(p)), p);
+        }
+    }
+
+    @Test
+    void windowsMicrosoftAppDataIsProtected() {
+        Path home = Path.of("/Users/tester");
+        ProtectedPaths win = new ProtectedPaths(home, Os.WINDOWS);
+        assertTrue(win.isProtected(home.resolve("AppData/Local/Microsoft")));
+        assertTrue(win.isProtected(home.resolve("AppData/Roaming/Microsoft")));
+        assertFalse(win.isProtected(home.resolve("Downloads/x")));
     }
 }

@@ -7,6 +7,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
@@ -169,6 +170,46 @@ class DiskScannerTest {
         assertEquals(expected, root.size());
         assertEquals(500, root.fileCount());
         assertEquals(10, root.children().size());
+    }
+
+    @Test
+    void otherDirectoryLikeEntryIsNotTraversable() {
+        BasicFileAttributes junction = attrs(true, false, true);
+        BasicFileAttributes symlinkDir = attrs(true, true, false);
+        BasicFileAttributes normalDir = attrs(true, false, false);
+        BasicFileAttributes file = attrs(false, false, false);
+
+        assertFalse(DiskScanner.isTraversableDirectory(junction));
+        assertFalse(DiskScanner.isTraversableDirectory(symlinkDir));
+        assertTrue(DiskScanner.isTraversableDirectory(normalDir));
+        assertFalse(DiskScanner.isTraversableDirectory(file));
+    }
+
+    @Test
+    void symlinkDirectoryIsLeaf(@TempDir Path tmp) throws IOException {
+        write(tmp.resolve("target/f"), 4);
+        Files.createSymbolicLink(tmp.resolve("link"), tmp.resolve("target"));
+
+        FileNode root = scan(tmp);
+        FileNode link = byName(root, "link");
+
+        assertFalse(link.isDir());
+        assertEquals(4, byName(root, "target").size());
+    }
+
+    private static java.nio.file.attribute.BasicFileAttributes attrs(
+            boolean directory, boolean symbolicLink, boolean other) {
+        return new java.nio.file.attribute.BasicFileAttributes() {
+            @Override public java.nio.file.attribute.FileTime lastModifiedTime() { return null; }
+            @Override public java.nio.file.attribute.FileTime lastAccessTime() { return null; }
+            @Override public java.nio.file.attribute.FileTime creationTime() { return null; }
+            @Override public boolean isRegularFile() { return !directory && !symbolicLink && !other; }
+            @Override public boolean isDirectory() { return directory; }
+            @Override public boolean isSymbolicLink() { return symbolicLink; }
+            @Override public boolean isOther() { return other; }
+            @Override public long size() { return 0; }
+            @Override public Object fileKey() { return null; }
+        };
     }
 
     private static FileNode byName(FileNode root, String name) {

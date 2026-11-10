@@ -47,7 +47,7 @@ public final class DiskScanner {
         }
         BasicFileAttributes attrs = readAttributes(root);
         if (attrs == null) return Optional.empty();
-        FileNode result = attrs.isDirectory() ? scanRoot() : scan(root, null);
+        FileNode result = isTraversableDirectory(attrs) ? scanRoot() : scan(root, null);
         return cancelled ? Optional.empty() : Optional.ofNullable(result);
     }
 
@@ -116,7 +116,7 @@ public final class DiskScanner {
             listener.onProgress(new ScanProgress(n, bytes.get(), skipped.get(), p));
         }
 
-        if (!attrs.isDirectory()) {
+        if (!isTraversableDirectory(attrs)) {
             bytes.addAndGet(attrs.size());
             return new FileNode(name, p, false, parent, attrs.size());
         }
@@ -142,6 +142,11 @@ public final class DiskScanner {
         } catch (IOException | SecurityException e) {
             return null;
         }
+    }
+
+    /** Directories that are symlinks or "other" (e.g. Windows junctions) are leaves — never entered. */
+    static boolean isTraversableDirectory(BasicFileAttributes attrs) {
+        return attrs.isDirectory() && !attrs.isSymbolicLink() && !attrs.isOther();
     }
 
     private static String nameOf(Path p) {

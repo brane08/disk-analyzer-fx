@@ -1,17 +1,16 @@
 # Open review findings (recorded, not fixed)
 
-Status: two fable+haiku review rounds done on branch `feature/opendisk-style`. No fix pass authorized yet.
-Deletion-safety items first when a fix pass is approved (TDD: failing test first).
+Status: deletion-safety fix pass done on `fix/deletion-safety` (C1, C2, I1–I4). Remaining items below still open.
 
 ## Critical
-- C1 Windows junctions traversed by delete and scan (`Cleaner.java:89-103`, `DiskScanner.java:119-130`): treat `isOther()` dirs as leaves.
-- C2 `CleanerTest.protectedPathsAreRefused` (`:20,35-47`) runs PERMANENT on real `/`, `/System`, `/Users/tester`; only code under test stops it. Passes via "not found" on Linux/Windows; asserts only `failed.size()==4`. Fix: `@TempDir` + explicit `Os`, assert reason "protected path" and files still exist.
+- C1 ~~Windows junctions traversed by delete and scan~~ **fixed**: `DiskScanner.isTraversableDirectory` treats `isSymbolicLink|isOther` as leaves; `Cleaner.deleteRecursively` skips those subtrees.
+- C2 ~~`CleanerTest.protectedPathsAreRefused` hits real `/`/`/System`~~ **fixed**: `@TempDir` + `Os.MAC` for PERMANENT home/Library; TRASH-only for absolute system paths with boom trasher.
 
 ## Important
-- I1 Real-pathed home not in `ProtectedPaths.exact`; Linux `/var`, `/run` trees swallow `/var/home/me`, `/run/media/*`.
-- I2 Unprotected containers: macOS `/private`, `/Volumes`, `~/Library/{Application Support,Keychains,Mail,...}`; Windows `AppData\Roaming`, `AppData\Local\Microsoft`; Linux `/mnt/*`, `/media/*`, `/srv`, `/snap`, `/nix`.
-- I3 Permanent delete aborts on first failure (read-only files); reports "Freed 0 B".
-- I4 Trash is a no-op on Linux (no `MOVE_TO_TRASH`): use `gio trash` or disable button.
+- I1 ~~Real-pathed home / `/run` swallow~~ **fixed**: home `toRealPath()` registered; `/run` is exact-only so `/run/media/...` stays deletable.
+- I2 ~~Unprotected containers~~ **fixed**: mac `/private`,`/Volumes`, sensitive `~/Library/*`; Linux `/srv`,`/snap`,`/nix`; Windows `AppData/*/Microsoft`. `/mnt`/`/media` remain exact (not trees).
+- I3 ~~Permanent delete aborts on first failure~~ **fixed**: continue-on-error walk; partial `freedBytes`; root stays out of `removed` if remnants remain.
+- I4 ~~Trash no-op on Linux~~ **fixed**: `Cleaner.trashAvailable()` + `gio trash` fallback; UI disables Trash when unavailable.
 - I5 Windows `Temp` offered as wholesale-deletable cache.
 - I6 Core tests fail on Windows (Mac-path tests, symlink and POSIX-perm tests unguarded); no Windows-branch tests; needs CI matrix. `emptyHomeHasNoCaches` uses host OS.
 - I7 Whole-disk scan sizes wrong (`/proc/kcore`, firmlinks, logical sizes); delete runs on FX thread.

@@ -94,9 +94,11 @@ public final class CollectorPane extends VBox {
     private void refresh() {
         view.setAll(collector.items());
         boolean empty = view.isEmpty();
+        boolean trashOk = Cleaner.trashAvailable();
         summary.setText(empty ? "Nothing to reclaim"
-                : view.size() + " item(s) — " + FileNode.human(collector.reclaimableBytes()) + " to reclaim");
-        trashBtn.setDisable(empty);
+                : view.size() + " item(s) — " + FileNode.human(collector.reclaimableBytes()) + " to reclaim"
+                + (trashOk ? "" : " (Trash unavailable on this system)"));
+        trashBtn.setDisable(empty || !trashOk);
         deleteBtn.setDisable(empty);
         clearBtn.setDisable(empty);
     }

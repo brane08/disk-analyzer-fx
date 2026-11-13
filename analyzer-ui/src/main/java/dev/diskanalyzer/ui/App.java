@@ -1,6 +1,7 @@
 package dev.diskanalyzer.ui;
 
 import atlantafx.base.theme.PrimerDark;
+import atlantafx.base.theme.PrimerLight;
 import dev.diskanalyzer.core.CacheCatalog;
 import dev.diskanalyzer.core.Cleaner;
 import dev.diskanalyzer.core.Collector;
@@ -22,6 +23,7 @@ import javafx.scene.control.Tab;
 import javafx.scene.control.TabPane;
 import javafx.scene.control.TreeItem;
 import javafx.scene.control.TreeTableColumn;
+import javafx.scene.control.Tooltip;
 import javafx.scene.control.TreeTableView;
 import javafx.scene.input.ClipboardContent;
 import javafx.scene.input.Dragboard;
@@ -41,6 +43,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.function.Consumer;
+import java.util.prefs.Preferences;
 
 public final class App extends Application {
     private Stage stage;
@@ -54,6 +57,9 @@ public final class App extends Application {
     private final Button scanBtn = new Button("Scan folder…", Icons.of("mdi2f-folder-search-outline"));
     private final Button cancelBtn = new Button("Cancel", Icons.of("mdi2c-close-circle-outline"));
     private final SearchBox search = new SearchBox();
+    private static final Preferences PREFS = Preferences.userNodeForPackage(App.class);
+    private static final String DARK_KEY = "darkTheme";
+    private final Button themeBtn = new Button("", Icons.of("mdi2t-theme-light-dark"));
     private FdaBanner banner;
     private CollectorPane collectorPane;
     private FileNode view;
@@ -62,7 +68,12 @@ public final class App extends Application {
     @Override
     public void start(Stage stage) {
         this.stage = stage;
-        Application.setUserAgentStylesheet(new PrimerDark().getUserAgentStylesheet());
+        applyTheme(PREFS.getBoolean(DARK_KEY, true));
+        themeBtn.setOnAction(e -> {
+            boolean dark = !PREFS.getBoolean(DARK_KEY, true);
+            PREFS.putBoolean(DARK_KEY, dark);
+            applyTheme(dark);
+        });
 
         Path home = Path.of(System.getProperty("user.home"));
         collectorPane = new CollectorPane(collector, new Cleaner(new ProtectedPaths(home)), this::rescanLast);
@@ -75,7 +86,7 @@ public final class App extends Application {
         search.setPrefWidth(260);
         Region spacer = new Region();
         HBox.setHgrow(spacer, Priority.ALWAYS);
-        HBox bar = new HBox(8, scanBtn, cancelBtn, spacer, progress, search);
+        HBox bar = new HBox(8, scanBtn, cancelBtn, spacer, progress, search, themeBtn);
         bar.setPadding(new Insets(8));
 
         crumbs.setAutoNavigationEnabled(false);
@@ -135,6 +146,13 @@ public final class App extends Application {
         stage.setTitle("Disk Analyzer");
         stage.setScene(new Scene(root, 1280, 760));
         stage.show();
+    }
+
+    private void applyTheme(boolean dark) {
+        Application.setUserAgentStylesheet(
+                (dark ? new PrimerDark() : new PrimerLight()).getUserAgentStylesheet());
+        sunburst.setDark(dark);
+        themeBtn.setTooltip(new Tooltip(dark ? "Switch to light theme" : "Switch to dark theme"));
     }
 
     private Path lastPath;

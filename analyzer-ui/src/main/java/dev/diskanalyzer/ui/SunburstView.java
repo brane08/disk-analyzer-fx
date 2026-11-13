@@ -28,6 +28,7 @@ public final class SunburstView extends Region {
     private FileNode current;
     private Arc hovered;
     private boolean centerHovered;
+    private boolean dark = true;
 
     private Consumer<FileNode> onDrill = n -> { };
     private Consumer<FileNode> onHover = n -> { };
@@ -59,6 +60,11 @@ public final class SunburstView extends Region {
                 onDrill.accept(current.parent());
             }
         });
+    }
+
+    public void setDark(boolean dark) {
+        this.dark = dark;
+        draw();
     }
 
     public void setOnDrill(Consumer<FileNode> h) { this.onDrill = h; }
@@ -141,7 +147,7 @@ public final class SunburstView extends Region {
 
     private void draw() {
         GraphicsContext g = canvas.getGraphicsContext2D();
-        g.setFill(Color.web("#1e1e1e"));
+        g.setFill(dark ? Color.web("#1e1e1e") : Color.web("#f6f8fa"));
         g.fillRect(0, 0, canvas.getWidth(), canvas.getHeight());
         if (current == null) return;
 
@@ -159,13 +165,14 @@ public final class SunburstView extends Region {
             g.strokeArc(cx - r, cy - r, 2 * r, 2 * r, 90 - a.start() - gap, -(a.sweep() - 2 * gap), ArcType.OPEN);
         }
 
-        g.setFill(centerHovered && current.parent() != null ? Color.web("#3a3a3a") : Color.web("#2a2a2a"));
+        boolean hot = centerHovered && current.parent() != null;
+        g.setFill(dark ? Color.web(hot ? "#3a3a3a" : "#2a2a2a") : Color.web(hot ? "#d0d7de" : "#e6eaef"));
         g.fillOval(cx - centerR() + 2, cy - centerR() + 2, 2 * centerR() - 4, 2 * centerR() - 4);
-        g.setFill(Color.WHITE);
+        g.setFill(dark ? Color.WHITE : Color.web("#1f2328"));
         g.setTextAlign(TextAlignment.CENTER);
         g.setFont(Font.font(Math.max(10, centerR() / 7)));
         g.fillText(current.name(), cx, cy - 4, 2 * centerR() - 16);
-        g.setFill(Color.web("#ffffffaa"));
+        g.setFill(dark ? Color.web("#ffffffaa") : Color.web("#1f2328aa"));
         g.fillText(FileNode.human(current.size()), cx, cy + 14, 2 * centerR() - 16);
         if (current.parent() != null) {
             g.fillText("↑ back", cx, cy + 30, 2 * centerR() - 16);

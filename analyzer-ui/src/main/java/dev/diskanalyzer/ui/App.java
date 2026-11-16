@@ -127,6 +127,7 @@ public final class App extends Application {
         };
         sunburst.setOnDrill(this::select);
         sunburst.setOnHover(hover);
+        sunburst.setOnAddToCollector(collectorPane::add);
         search.setOnPick(this::select);
 
         scan.runningProperty().addListener((o, was, now) -> {
@@ -168,7 +169,10 @@ public final class App extends Application {
     }
 
     private void rescanLast() {
-        if (lastPath != null) scan.start(lastPath);
+        if (scan.runningProperty().get()) return; // don't cancel a scan the user started meanwhile
+        Path p = lastPath;
+        while (p != null && !java.nio.file.Files.isDirectory(p)) p = p.getParent();
+        if (p != null) scan.start(p);
     }
 
     private void onRoot(FileNode root) {
@@ -182,15 +186,29 @@ public final class App extends Application {
             return;
         }
         boolean scanning = scan.runningProperty().get();
-        if (scanning && view != null && view.parent() != null) {
-            return; // user drilled down mid-scan: don't yank the view back to the root on every partial
-        }
+        // A new scan clears the root first, which resets view and selection, so anything still set here
+        // belongs to this scan and is carried over to the final result too.
+        Path viewPath = view != null ? view.path() : null;
+        TreeItem<FileNode> selected = table.getSelectionModel().getSelectedItem();
+        Path selectedPath = selected != null ? selected.getValue().path() : null;
+
         FileTreeItem rootItem = new FileTreeItem(root);
         rootItem.setExpanded(true);
-        table.setRoot(rootItem);
-        show(root);
+        syncing = true;
+        try {
+            table.setRoot(rootItem);
+        } finally {
+            syncing = false;
+        }
+        FileNode viewNode = viewPath == null ? null : findByPath(root, viewPath);
+        show(viewNode != null ? viewNode : root);
+        if (selectedPath != null) {
+            FileNode sel = findByPath(root, selectedPath);
+            if (sel != null) selectInTable(sel, false);
+        }
         banner.update(root.skippedDirs());
         if (!scan.runningProperty().get()) {
+            collectorPane.retarget(root);
             search.setIndex(SearchIndex.of(root));
             status.setText(root.fileCount() + " files, " + FileNode.human(root.size()) + " in " + root.path());
         }
@@ -262,9 +280,32 @@ public final class App extends Application {
         crumbs.setSelectedCrumb(crumb);
     }
 
+    private static FileNode findByPath(FileNode root, Path p) {
+        if (root.path().equals(p)) return root;
+        if (!p.startsWith(root.path())) return null;
+        FileNode n = root;
+        outer:
+        while (true) {
+            for (FileNode c : n.children()) {
+                if (p.equals(c.path())) return c;
+                if (p.startsWith(c.path())) {
+                    n = c;
+                    continue outer;
+                }
+            }
+            return null;
+        }
+    }
+
     /** Select node in the table (expanding ancestors) and show its folder in the sunburst. */
     private void select(FileNode node) {
-        if (table.getRoot() == null) return;
+        if (!selectInTable(node, true)) return;
+        show(node.isDir() ? node : node.parent());
+    }
+
+    /** Selects node in the table, expanding ancestors, without touching the sunburst. */
+    private boolean selectInTable(FileNode node, boolean scroll) {
+        if (table.getRoot() == null) return false;
         List<FileNode> chain = new ArrayList<>();
         for (FileNode n = node; n != null; n = n.parent()) chain.add(n);
         Collections.reverse(chain);
@@ -279,20 +320,25 @@ public final class App extends Application {
                     break;
                 }
             }
-            if (next == null) return;
+            if (next == null) return false;
             item = next;
         }
         syncing = true;
         try {
             table.getSelectionModel().select(item);
-            table.scrollTo(table.getRow(item));
+            if (scroll) table.scrollTo(table.getRow(item));
         } finally {
             syncing = false;
         }
-        show(node.isDir() ? node : node.parent());
+        return true;
     }
 
     public static void main(String[] args) {
+        dev.diskanalyzer.core.UiScale.override(
+                System.getProperty("glass.gtk.uiScale"),
+                System.getProperty("diskanalyzer.uiScale"),
+                System.getenv("DISKANALYZER_UI_SCALE"))
+                .ifPresent(v -> System.setProperty("glass.gtk.uiScale", v));
         launch(args);
     }
 }

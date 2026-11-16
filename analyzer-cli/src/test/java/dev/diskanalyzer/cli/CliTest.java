@@ -72,6 +72,20 @@ class CliTest {
     }
 
     @Test
+    void topFilesFlagMatchesDefaultAndRejectsBadCombos(@TempDir Path tmp) throws IOException {
+        write(tmp.resolve("d/three"), 3);
+
+        Result files = run("top", tmp.toString(), "--files", "--no-color");
+        Result both = run("top", tmp.toString(), "--files", "--dirs", "--no-color");
+        Result negative = run("top", tmp.toString(), "-n", "-1", "--no-color");
+
+        assertEquals(0, files.code(), files.err());
+        assertTrue(files.out().contains("three"), files.out());
+        assertEquals(2, both.code());
+        assertEquals(2, negative.code());
+    }
+
+    @Test
     void searchFindsByName(@TempDir Path tmp) throws IOException {
         write(tmp.resolve("docs/Report.pdf"), 100);
         write(tmp.resolve("other.txt"), 1);
@@ -85,13 +99,21 @@ class CliTest {
 
     @Test
     void cachesListsExistingLocationsOfGivenHome(@TempDir Path home) throws IOException {
-        write(home.resolve(".npm/pkg"), 50);
+        write(home.resolve(".npm/_cacache/pkg"), 50);
 
         Result r = run("caches", "--home", home.toString(), "--no-color");
 
         assertEquals(0, r.code(), r.err());
         assertTrue(r.out().contains("npm"), r.out());
         assertTrue(r.out().contains("50 B"), r.out());
+    }
+
+    @Test
+    void cachesWithMissingHomeExitsTwo(@TempDir Path tmp) {
+        Result r = run("caches", "--home", tmp.resolve("nope").toString(), "--no-color");
+
+        assertEquals(2, r.code());
+        assertTrue(r.err().contains("not found"), r.err());
     }
 
     @Test

@@ -32,20 +32,49 @@ class CleanerTest {
     }
 
     @Test
-    void protectedPathsAreRefused() {
+    void protectedPathsAreRefused(@TempDir Path tmp) throws IOException {
+        Path home = Files.createDirectories(tmp.resolve("home"));
+        Path library = Files.createDirectories(home.resolve("Library"));
+        Cleaner safe = new Cleaner(new ProtectedPaths(home, Os.MAC), p -> {
+            trashed.add(p);
+            return true;
+        });
         List<FileNode> items = List.of(
-                new FileNode("/", Path.of("/"), true, null, 1),
-                new FileNode("tester", HOME, true, null, 1),
-                new FileNode("Library", HOME.resolve("Library"), true, null, 1),
-                new FileNode("System", Path.of("/System"), true, null, 1));
+                new FileNode("home", home, true, null, 1),
+                new FileNode("Library", library, true, null, 1));
 
-        CleanResult r = cleaner.clean(items, Mode.TRASH);
+        CleanResult r = safe.clean(items, Mode.PERMANENT);
 
         assertTrue(r.removed().isEmpty());
         assertTrue(trashed.isEmpty());
-        assertEquals(4, r.failed().size());
+        assertEquals(2, r.failed().size());
         assertTrue(r.failed().values().stream().allMatch("protected path"::equals));
         assertEquals(0, r.freedBytes());
+        assertTrue(Files.isDirectory(library));
+    }
+
+    @Test
+    @org.junit.jupiter.api.condition.DisabledOnOs(org.junit.jupiter.api.condition.OS.WINDOWS)
+    void systemRootsAreProtectedWithoutTouchingThem() {
+        ProtectedPaths pp = new ProtectedPaths(HOME, Os.MAC);
+
+        assertTrue(pp.isProtected(Path.of("/")));
+        assertTrue(pp.isProtected(Path.of("/System")));
+        assertTrue(pp.isProtected(Path.of("/Volumes")));
+        assertTrue(pp.isProtected(Path.of("/private")));
+    }
+
+    @Test
+    @org.junit.jupiter.api.condition.DisabledOnOs(org.junit.jupiter.api.condition.OS.WINDOWS)
+    void reparsePointsAreTreatedAsLinks(@TempDir Path tmp) throws IOException {
+        write(tmp.resolve("target/f"), 4);
+        Path link = Files.createSymbolicLink(tmp.resolve("link"), tmp.resolve("target"));
+        var linkAttrs = Files.readAttributes(link, java.nio.file.attribute.BasicFileAttributes.class,
+                java.nio.file.LinkOption.NOFOLLOW_LINKS);
+        var dirAttrs = Files.readAttributes(tmp.resolve("target"), java.nio.file.attribute.BasicFileAttributes.class);
+
+        assertTrue(Cleaner.isLinkLike(link, linkAttrs));
+        assertFalse(Cleaner.isLinkLike(tmp.resolve("target"), dirAttrs));
     }
 
     @Test
@@ -89,6 +118,49 @@ class CleanerTest {
     }
 
     @Test
+    @org.junit.jupiter.api.condition.DisabledOnOs(org.junit.jupiter.api.condition.OS.WINDOWS)
+    void permanentDeleteContinuesPastFailures(@TempDir Path tmp) throws IOException {
+        org.junit.jupiter.api.Assumptions.assumeTrue(
+                tmp.getFileSystem().supportedFileAttributeViews().contains("posix"));
+        write(tmp.resolve("victim/locked/f"), 1);
+        write(tmp.resolve("victim/ok/g"), 1);
+        FileNode victim = scan(tmp.resolve("victim"));
+        Path locked = tmp.resolve("victim/locked");
+        Files.setPosixFilePermissions(locked, java.nio.file.attribute.PosixFilePermissions.fromString("r-xr-xr-x"));
+        try {
+            org.junit.jupiter.api.Assumptions.assumeFalse(Files.isWritable(locked));
+
+            CleanResult r = cleaner.clean(List.of(victim), Mode.PERMANENT);
+
+            assertEquals(1, r.failed().size());
+            assertFalse(Files.exists(tmp.resolve("victim/ok")));
+            assertTrue(Files.exists(locked.resolve("f")));
+        } finally {
+            Files.setPosixFilePermissions(locked,
+                    java.nio.file.attribute.PosixFilePermissions.fromString("rwxr-xr-x"));
+        }
+    }
+
+    @Test
+    @org.junit.jupiter.api.condition.DisabledOnOs(org.junit.jupiter.api.condition.OS.WINDOWS)
+    void xdgTrashMovesEntryAndWritesInfo(@TempDir Path tmp) throws IOException {
+        Path data = tmp.resolve("data");
+        write(tmp.resolve("my dir/f"), 2);
+        write(tmp.resolve("other/my dir/f"), 2);
+
+        assertTrue(Cleaner.xdgTrash(tmp.resolve("my dir"), data));
+        assertTrue(Cleaner.xdgTrash(tmp.resolve("other/my dir"), data));
+
+        assertFalse(Files.exists(tmp.resolve("my dir")));
+        assertTrue(Files.exists(data.resolve("Trash/files/my dir/f")));
+        assertTrue(Files.exists(data.resolve("Trash/files/my dir.1/f")));
+        String info = Files.readString(data.resolve("Trash/info/my dir.trashinfo"));
+        assertTrue(info.startsWith("[Trash Info]\nPath="));
+        assertTrue(info.contains("my%20dir"), info);
+        assertTrue(info.contains("DeletionDate="));
+    }
+
+    @Test
     void trashUsesInjectedTrasher(@TempDir Path tmp) throws IOException {
         write(tmp.resolve("keep/f"), 3);
         FileNode keep = scan(tmp.resolve("keep"));
@@ -124,6 +196,7 @@ class CleanerTest {
     }
 
     @Test
+    @org.junit.jupiter.api.condition.DisabledOnOs(org.junit.jupiter.api.condition.OS.WINDOWS)
     void symlinkIsRemovedWithoutFollowing(@TempDir Path tmp) throws IOException {
         write(tmp.resolve("target/f"), 4);
         Path link = Files.createSymbolicLink(tmp.resolve("link"), tmp.resolve("target"));

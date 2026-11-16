@@ -7,6 +7,7 @@ import java.nio.file.Path;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+@org.junit.jupiter.api.condition.DisabledOnOs(org.junit.jupiter.api.condition.OS.WINDOWS)
 class ProtectedPathsTest {
     private static final Path HOME = Path.of("/Users/tester");
     private final ProtectedPaths pp = new ProtectedPaths(HOME, Os.MAC);

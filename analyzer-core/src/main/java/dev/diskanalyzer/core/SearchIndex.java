@@ -27,7 +27,7 @@ public final class SearchIndex {
     }
 
     public List<FileNode> search(String query, int limit) {
-        if (query == null || query.isBlank()) return List.of();
+        if (query == null || query.isBlank() || limit <= 0) return List.of();
         String q = query.toLowerCase(Locale.ROOT);
         List<FileNode> hits = new ArrayList<>();
         for (int i = 0; i < nodes.size(); i++) {

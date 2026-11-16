@@ -15,6 +15,10 @@ public final class CachesCommand extends BaseCommand {
 
     @Override
     public Integer call() {
+        if (!java.nio.file.Files.isDirectory(home)) {
+            err().println("analyzer: home directory not found: " + home);
+            return EXIT_BAD_PATH;
+        }
         long total = 0;
         for (CacheLocation c : new CacheCatalog(home).existing()) {
             FileNode node = scan(c.path());

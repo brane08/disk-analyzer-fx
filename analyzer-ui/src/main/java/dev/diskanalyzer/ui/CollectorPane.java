@@ -5,6 +5,7 @@ import dev.diskanalyzer.core.CleanResult;
 import dev.diskanalyzer.core.Collector;
 import dev.diskanalyzer.core.FileNode;
 import dev.diskanalyzer.core.Mode;
+import javafx.application.Platform;
 import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
 import javafx.geometry.Insets;
@@ -31,6 +32,7 @@ public final class CollectorPane extends VBox {
     private final Button trashBtn = new Button("Move to Trash", Icons.of("mdi2t-trash-can-outline"));
     private final Button deleteBtn = new Button("Delete Permanently", Icons.of("mdi2d-delete-forever"));
     private final Button clearBtn = new Button("Clear");
+    private boolean cleaning;
 
     public CollectorPane(Collector collector, Cleaner cleaner, Runnable onCleaned) {
         this.collector = collector;
@@ -87,34 +89,66 @@ public final class CollectorPane extends VBox {
     }
 
     public void add(FileNode node) {
+        if (cleaning) return;
         collector.add(node);
+        refresh();
+    }
+
+    /** Refreshes collected items against a completed scan so sizes are current and vanished items drop out. */
+    public void retarget(FileNode root) {
+        if (cleaning) return;
+        collector.retarget(root);
         refresh();
     }
 
     private void refresh() {
         view.setAll(collector.items());
         boolean empty = view.isEmpty();
-        summary.setText(empty ? "Nothing to reclaim"
+        summary.setText(cleaning ? "Cleaning…" : empty ? "Nothing to reclaim"
                 : view.size() + " item(s) — " + FileNode.human(collector.reclaimableBytes()) + " to reclaim");
-        trashBtn.setDisable(empty);
-        deleteBtn.setDisable(empty);
-        clearBtn.setDisable(empty);
+        boolean locked = empty || cleaning;
+        trashBtn.setDisable(locked);
+        deleteBtn.setDisable(locked);
+        clearBtn.setDisable(locked);
     }
 
     private void clean(Mode mode) {
-        if (mode == Mode.PERMANENT) {
-            StringBuilder paths = new StringBuilder();
-            view.stream().limit(15).forEach(n -> paths.append("\n• ").append(n.path()));
-            if (view.size() > 15) paths.append("\n… and ").append(view.size() - 15).append(" more");
-            Alert confirm = new Alert(Alert.AlertType.CONFIRMATION,
-                    "Permanently delete " + view.size() + " item(s) (" + FileNode.human(collector.reclaimableBytes())
-                            + ")? This cannot be undone." + paths,
-                    ButtonType.OK, ButtonType.CANCEL);
-            confirm.setHeaderText("Delete permanently");
-            if (confirm.showAndWait().orElse(ButtonType.CANCEL) != ButtonType.OK) return;
-        }
-        CleanResult result = cleaner.clean(collector.items(), mode);
+        if (cleaning) return;
+        StringBuilder paths = new StringBuilder();
+        view.stream().limit(15).forEach(n -> paths.append("\n• ").append(n.path()));
+        if (view.size() > 15) paths.append("\n… and ").append(view.size() - 15).append(" more");
+        boolean permanent = mode == Mode.PERMANENT;
+        Alert confirm = new Alert(Alert.AlertType.CONFIRMATION,
+                (permanent ? "Permanently delete " : "Move to Trash ") + view.size() + " item(s) ("
+                        + FileNode.human(collector.reclaimableBytes()) + ")?"
+                        + (permanent ? " This cannot be undone." : "") + paths,
+                ButtonType.OK, ButtonType.CANCEL);
+        confirm.setHeaderText(permanent ? "Delete permanently" : "Move to Trash");
+        useScaledGraphic(confirm, "mdi2h-help-circle-outline");
+        if (confirm.showAndWait().orElse(ButtonType.CANCEL) != ButtonType.OK) return;
+        java.util.List<FileNode> items = java.util.List.copyOf(collector.items());
+        cleaning = true;
+        refresh();
+        Thread.ofVirtual().name("collector-clean").start(() -> {
+            CleanResult result;
+            try {
+                result = cleaner.clean(items, mode);
+            } catch (Throwable e) {
+                java.util.Map<Path, String> failed = new java.util.LinkedHashMap<>();
+                for (FileNode n : items) failed.put(n.path(), String.valueOf(e.getMessage()));
+                result = new CleanResult(java.util.List.of(), failed, 0);
+            }
+            CleanResult finished = result;
+            Platform.runLater(() -> finishClean(finished, mode, items));
+        });
+    }
+
+    private void finishClean(CleanResult result, Mode mode, java.util.List<FileNode> cleaned) {
+        cleaning = false;
         collector.clear();
+        for (FileNode n : cleaned) {
+            if (result.failed().containsKey(n.path())) collector.add(n); // keep failures so they can be retried
+        }
         refresh();
 
         StringBuilder msg = new StringBuilder("Freed " + FileNode.human(result.freedBytes())
@@ -128,7 +162,14 @@ public final class CollectorPane extends VBox {
         Alert done = new Alert(result.failed().isEmpty() ? Alert.AlertType.INFORMATION : Alert.AlertType.WARNING,
                 msg.toString(), ButtonType.OK);
         done.setHeaderText(mode == Mode.TRASH ? "Moved to Trash" : "Deleted");
+        useScaledGraphic(done, result.failed().isEmpty() ? "mdi2i-information-outline" : "mdi2a-alert-outline");
         done.showAndWait();
         onCleaned.run();
+    }
+
+    /** Replaces the stock fixed-size dialog image with a font icon that scales with the UI; keeps the stock one if unavailable. */
+    private static void useScaledGraphic(Alert alert, String literal) {
+        javafx.scene.Node graphic = Icons.dialog(literal);
+        if (graphic != null) alert.setGraphic(graphic);
     }
 }

@@ -11,8 +11,8 @@ public enum Os {
 
     static Os parse(String osName) {
         String n = osName.toLowerCase(Locale.ROOT);
-        if (n.contains("win")) return WINDOWS;
         if (n.contains("mac") || n.contains("darwin")) return MAC;
+        if (n.contains("win")) return WINDOWS;
         return LINUX;
     }
 }

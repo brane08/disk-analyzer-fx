@@ -3,6 +3,12 @@ package dev.diskanalyzer.ui;
 import dev.diskanalyzer.core.FileNode;
 
 import javafx.scene.canvas.Canvas;
+import javafx.scene.control.ContextMenu;
+import javafx.scene.control.MenuItem;
+import javafx.scene.input.ClipboardContent;
+import javafx.scene.input.Dragboard;
+import javafx.scene.input.MouseButton;
+import javafx.scene.input.TransferMode;
 import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.layout.Region;
 import javafx.scene.paint.Color;
@@ -32,6 +38,7 @@ public final class SunburstView extends Region {
 
     private Consumer<FileNode> onDrill = n -> { };
     private Consumer<FileNode> onHover = n -> { };
+    private Consumer<FileNode> onAdd = n -> { };
 
     public SunburstView() {
         getChildren().add(canvas);
@@ -52,7 +59,35 @@ public final class SunburstView extends Region {
             draw();
             onHover.accept(null);
         });
+        canvas.setOnDragDetected(e -> {
+            Arc a = arcAt(e.getX(), e.getY());
+            if (a == null || a.node().parent() == null) return;
+            DragState.node = a.node();
+            ClipboardContent cc = new ClipboardContent();
+            cc.putString(a.node().path().toString());
+            Dragboard db = canvas.startDragAndDrop(TransferMode.COPY);
+            db.setContent(cc);
+            e.consume();
+        });
+        canvas.setOnDragDone(e -> DragState.node = null);
+        MenuItem addItem = new MenuItem("Add to Collector");
+        ContextMenu menu = new ContextMenu(addItem);
+        FileNode[] target = new FileNode[1];
+        addItem.setOnAction(e -> {
+            if (target[0] != null) onAdd.accept(target[0]);
+        });
+        canvas.setOnContextMenuRequested(e -> {
+            Arc a = arcAt(e.getX(), e.getY());
+            if (a == null || a.node().parent() == null) {
+                menu.hide();
+                return;
+            }
+            target[0] = a.node();
+            menu.show(canvas, e.getScreenX(), e.getScreenY());
+            e.consume();
+        });
         canvas.setOnMouseClicked(e -> {
+            if (e.getButton() != MouseButton.PRIMARY) return;
             Arc a = arcAt(e.getX(), e.getY());
             if (a != null) {
                 if (a.node().isDir() && !a.node().children().isEmpty()) onDrill.accept(a.node());
@@ -70,6 +105,8 @@ public final class SunburstView extends Region {
     public void setOnDrill(Consumer<FileNode> h) { this.onDrill = h; }
 
     public void setOnHover(Consumer<FileNode> h) { this.onHover = h; }
+
+    public void setOnAddToCollector(Consumer<FileNode> h) { this.onAdd = h; }
 
     public void setCurrent(FileNode node) {
         this.current = node;

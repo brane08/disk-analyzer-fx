@@ -72,6 +72,20 @@ class CliTest {
     }
 
     @Test
+    void topFilesFlagMatchesDefaultAndRejectsBadCombos(@TempDir Path tmp) throws IOException {
+        write(tmp.resolve("d/three"), 3);
+
+        Result files = run("top", tmp.toString(), "--files", "--no-color");
+        Result both = run("top", tmp.toString(), "--files", "--dirs", "--no-color");
+        Result negative = run("top", tmp.toString(), "-n", "-1", "--no-color");
+
+        assertEquals(0, files.code(), files.err());
+        assertTrue(files.out().contains("three"), files.out());
+        assertEquals(2, both.code());
+        assertEquals(2, negative.code());
+    }
+
+    @Test
     void searchFindsByName(@TempDir Path tmp) throws IOException {
         write(tmp.resolve("docs/Report.pdf"), 100);
         write(tmp.resolve("other.txt"), 1);
@@ -85,13 +99,40 @@ class CliTest {
 
     @Test
     void cachesListsExistingLocationsOfGivenHome(@TempDir Path home) throws IOException {
-        write(home.resolve(".npm/pkg"), 50);
+        write(home.resolve(".m2/repository/pkg"), 50); // same location on every OS
 
         Result r = run("caches", "--home", home.toString(), "--no-color");
 
         assertEquals(0, r.code(), r.err());
-        assertTrue(r.out().contains("npm"), r.out());
+        assertTrue(r.out().contains("Maven"), r.out());
         assertTrue(r.out().contains("50 B"), r.out());
+    }
+
+    @Test
+    void cachesWithMissingHomeExitsTwo(@TempDir Path tmp) {
+        Result r = run("caches", "--home", tmp.resolve("nope").toString(), "--no-color");
+
+        assertEquals(2, r.code());
+        assertTrue(r.err().contains("not found"), r.err());
+    }
+
+    @Test
+    @org.junit.jupiter.api.condition.DisabledOnOs(org.junit.jupiter.api.condition.OS.WINDOWS)
+    void scanWarnsWhenFoldersCannotBeRead(@TempDir Path tmp) throws IOException {
+        Path locked = tmp.resolve("locked");
+        Files.createDirectories(locked);
+        write(tmp.resolve("ok"), 4);
+        Files.setPosixFilePermissions(locked, java.nio.file.attribute.PosixFilePermissions.fromString("---------"));
+        try {
+            org.junit.jupiter.api.Assumptions.assumeFalse(Files.isReadable(locked), "privileges ignore permission bits");
+
+            Result r = run("scan", tmp.toString(), "--no-color");
+
+            assertEquals(0, r.code(), r.err());
+            assertTrue(r.err().contains("1 folder(s) could not be read"), r.err());
+        } finally {
+            Files.setPosixFilePermissions(locked, java.nio.file.attribute.PosixFilePermissions.fromString("rwx------"));
+        }
     }
 
     @Test

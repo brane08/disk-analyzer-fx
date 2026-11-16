@@ -2,7 +2,6 @@ package dev.diskanalyzer.core;
 
 import java.awt.Desktop;
 import java.io.IOException;
-import java.nio.file.FileVisitOption;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
@@ -10,7 +9,6 @@ import java.nio.file.Path;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
-import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -26,56 +24,88 @@ public final class Cleaner {
     private final ProtectedPaths protectedPaths;
     private final Trasher trasher;
 
-    private static final Object TRASH_LOCK = new Object();
-    private static Boolean trashAvailableCache;
-
     public Cleaner(ProtectedPaths protectedPaths, Trasher trasher) {
         this.protectedPaths = protectedPaths;
         this.trasher = trasher;
     }
 
     public Cleaner(ProtectedPaths protectedPaths) {
-        this(protectedPaths, Cleaner::defaultTrash);
+        this(protectedPaths, Cleaner::desktopTrash);
     }
 
-    /** True when Desktop MOVE_TO_TRASH works or `gio` is on PATH. Cached after first probe. */
+    private static volatile Boolean trashAvailable;
+
+    /** Whether the default Trash can work here: a desktop Trash, or the freedesktop fallback on Linux. Cached. */
     public static boolean trashAvailable() {
-        synchronized (TRASH_LOCK) {
-            if (trashAvailableCache == null) {
-                trashAvailableCache = desktopTrashSupported() || gioOnPath();
-            }
-            return trashAvailableCache;
+        Boolean cached = trashAvailable;
+        if (cached == null) {
+            cached = desktopTrashSupported() || Os.detect() == Os.LINUX;
+            trashAvailable = cached;
         }
+        return cached;
     }
 
     private static boolean desktopTrashSupported() {
-        return Desktop.isDesktopSupported() && Desktop.getDesktop().isSupported(Desktop.Action.MOVE_TO_TRASH);
-    }
-
-    private static boolean gioOnPath() {
-        String path = System.getenv("PATH");
-        if (path == null || path.isBlank()) return false;
-        for (String dir : path.split(java.util.regex.Pattern.quote(java.io.File.pathSeparator))) {
-            if (Files.isExecutable(Path.of(dir, "gio"))) return true;
+        try {
+            return Desktop.isDesktopSupported() && Desktop.getDesktop().isSupported(Desktop.Action.MOVE_TO_TRASH);
+        } catch (RuntimeException | LinkageError e) {
+            return false;
         }
-        return false;
     }
 
-    private static boolean defaultTrash(Path p) throws IOException {
+    private static boolean desktopTrash(Path p) throws IOException {
         if (desktopTrashSupported()) {
             return Desktop.getDesktop().moveToTrash(p.toFile());
         }
-        if (!gioOnPath()) return false;
-        Process proc = new ProcessBuilder("gio", "trash", "--", p.toAbsolutePath().toString())
-                .redirectErrorStream(true)
-                .start();
-        try {
-            int code = proc.waitFor();
-            return code == 0;
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            return false;
+        return fallbackTrash(p, Os.detect(),
+                dataHome(System.getenv("XDG_DATA_HOME"), System.getProperty("user.home")));
+    }
+
+    static Path dataHome(String xdgDataHome, String userHome) {
+        return xdgDataHome == null || xdgDataHome.isBlank()
+                ? Path.of(userHome, ".local", "share")
+                : Path.of(xdgDataHome);
+    }
+
+    /** Used when the desktop has no Trash support: only Linux has a file-based fallback. */
+    static boolean fallbackTrash(Path p, Os os, Path dataHome) throws IOException {
+        return os == Os.LINUX && xdgTrash(p, dataHome);
+    }
+
+    /** Freedesktop.org trash: moves {@code p} into {@code dataHome/Trash/files} with a .trashinfo record. */
+    static boolean xdgTrash(Path p, Path dataHome) throws IOException {
+        Path files = Files.createDirectories(dataHome.resolve("Trash").resolve("files"));
+        Path info = Files.createDirectories(dataHome.resolve("Trash").resolve("info"));
+        Path abs = p.toAbsolutePath().normalize();
+        String base = abs.getFileName().toString();
+        String name = base;
+        Path infoFile = null;
+        for (int i = 1; infoFile == null; i++) {
+            if (!Files.exists(files.resolve(name), LinkOption.NOFOLLOW_LINKS)) {
+                try {
+                    infoFile = Files.createFile(info.resolve(name + ".trashinfo"));
+                } catch (java.nio.file.FileAlreadyExistsException e) {
+                    // taken: try the next suffix
+                }
+            }
+            if (infoFile == null) name = base + "." + i;
         }
+        String rawPath = abs.toUri().getRawPath();
+        if (rawPath.length() > 1 && rawPath.endsWith("/")) rawPath = rawPath.substring(0, rawPath.length() - 1);
+        try {
+            Path parentDir = abs.getParent() == null ? abs : abs.getParent();
+            if (!Files.getFileStore(parentDir).equals(Files.getFileStore(files))) {
+                throw new IOException("different filesystem than the Trash; use permanent delete");
+            }
+            Files.writeString(infoFile, "[Trash Info]\nPath=" + rawPath + "\nDeletionDate="
+                    + java.time.LocalDateTime.now().format(
+                            java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss")) + "\n");
+            Files.move(abs, files.resolve(name));
+        } catch (IOException | RuntimeException e) {
+            Files.deleteIfExists(infoFile);
+            throw e;
+        }
+        return true;
     }
 
     public CleanResult clean(java.util.Collection<FileNode> items, Mode mode) {
@@ -92,11 +122,19 @@ public final class Cleaner {
             }
         }
 
+        List<FileNode> covered = new ArrayList<>();
         for (FileNode n : candidates) {
-            if (hasAncestorIn(n, candidates)) continue;
+            if (hasAncestorIn(n, candidates)) {
+                covered.add(n);
+                continue;
+            }
             Path p = n.path();
             if (!Files.exists(p, LinkOption.NOFOLLOW_LINKS)) {
                 failed.put(p, "not found");
+                continue;
+            }
+            if (isMountPoint(p)) {
+                failed.put(p, "mount point");
                 continue;
             }
             try {
@@ -105,20 +143,25 @@ public final class Cleaner {
                         failed.put(p, "trash unavailable");
                         continue;
                     }
-                    removed.add(p);
-                    freed += n.size();
                 } else {
-                    long partialFreed = deleteRecursively(p, failed);
-                    if (!Files.exists(p, LinkOption.NOFOLLOW_LINKS)) {
-                        removed.add(p);
-                        freed += n.size();
-                    } else {
-                        freed += partialFreed;
-                        failed.putIfAbsent(p, "partial delete");
+                    DeleteOutcome outcome = deleteRecursively(p);
+                    if (Files.exists(p, LinkOption.NOFOLLOW_LINKS)) {
+                        freed += outcome.freedBytes();
+                        failed.put(p, outcome.failure() == null
+                                ? "partial delete" : "partial delete: " + outcome.failure().getMessage());
+                        continue;
                     }
                 }
+                removed.add(p);
+                freed += n.size();
             } catch (IOException | RuntimeException e) {
                 failed.put(p, String.valueOf(e.getMessage()));
+            }
+        }
+        List<Path> failedParents = new ArrayList<>(failed.keySet());
+        for (FileNode n : covered) {
+            if (failedParents.stream().anyMatch(f -> n.path().startsWith(f))) {
+                failed.put(n.path(), "not removed: containing item failed");
             }
         }
         return new CleanResult(List.copyOf(removed), failed, freed);
@@ -131,24 +174,70 @@ public final class Cleaner {
         return false;
     }
 
-    /** Deletes as much as possible. Records per-path failures; returns bytes from deleted files when root remains. */
-    private static long deleteRecursively(Path root, Map<Path, String> failed) throws IOException {
-        BasicFileAttributes rootAttrs = Files.readAttributes(root, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
-        if (!DiskScanner.isTraversableDirectory(rootAttrs)) {
-            Files.delete(root);
-            return rootAttrs.size();
+    /** Symlinks and Windows junctions/reparse points: removed as a single entry, never descended into. */
+    static boolean isLinkLike(Path path, BasicFileAttributes attrs) {
+        if (attrs.isSymbolicLink()) return true;
+        if (!attrs.isOther()) return false;
+        // Other reparse points (junctions, mount points) resolve elsewhere; cloud placeholders
+        // (OneDrive etc.) resolve to themselves and are ordinary folders.
+        try {
+            return !path.toRealPath().equals(path.toAbsolutePath().normalize());
+        } catch (IOException | RuntimeException e) {
+            return true;
         }
-        long[] freed = {0};
-        Files.walkFileTree(root, EnumSet.noneOf(FileVisitOption.class), Integer.MAX_VALUE, new SimpleFileVisitor<>() {
+    }
+
+    private static java.nio.file.FileStore storeOf(Path p) {
+        try {
+            return Files.getFileStore(p);
+        } catch (IOException | RuntimeException e) {
+            return null;
+        }
+    }
+
+    /** True when {@code p} (not a symlink) lives on a different filesystem than its parent, i.e. it is a mount point. */
+    static boolean isMountPoint(Path p) {
+        if (Files.isSymbolicLink(p)) return false;
+        Path parent = p.toAbsolutePath().getParent();
+        if (parent == null) return false;
+        java.nio.file.FileStore own = storeOf(p);
+        java.nio.file.FileStore up = storeOf(parent);
+        return own != null && up != null && !own.equals(up);
+    }
+
+    /** Deletes as much of the tree as possible and reports bytes freed plus the first failure, if any. */
+    private static DeleteOutcome deleteRecursively(Path root) {
+        IOException[] first = new IOException[1];
+        long[] freed = new long[1];
+        java.nio.file.FileStore rootStore = storeOf(root);
+        try {
+            Files.walkFileTree(root, new SimpleFileVisitor<>() {
             @Override
-            public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) throws IOException {
-                if (!dir.equals(root) && !DiskScanner.isTraversableDirectory(attrs)) {
-                    try {
-                        Files.delete(dir);
-                        freed[0] += attrs.size();
-                    } catch (IOException e) {
-                        failed.put(dir, String.valueOf(e.getMessage()));
+            public FileVisitResult visitFileFailed(Path file, IOException exc) {
+                // A broken or access-denied junction/symlink can't be opened as a directory: remove it as a link.
+                try {
+                    BasicFileAttributes a = Files.readAttributes(file, BasicFileAttributes.class,
+                            LinkOption.NOFOLLOW_LINKS);
+                    if (isLinkLike(file, a)) {
+                        tryDelete(file);
+                        return FileVisitResult.CONTINUE;
                     }
+                } catch (IOException | RuntimeException ignored) {
+                    // fall through and report the original failure
+                }
+                if (first[0] == null) first[0] = exc;
+                return FileVisitResult.CONTINUE;
+            }
+
+            @Override
+            public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
+                if (isLinkLike(dir, attrs)) {
+                    tryDelete(dir);
+                    return FileVisitResult.SKIP_SUBTREE;
+                }
+                if (rootStore != null && !dir.equals(root) && !rootStore.equals(storeOf(dir))) {
+                    // never delete across a mount boundary (bind mounts, nested volumes)
+                    if (first[0] == null) first[0] = new IOException("not crossing into another filesystem: " + dir);
                     return FileVisitResult.SKIP_SUBTREE;
                 }
                 return FileVisitResult.CONTINUE;
@@ -156,34 +245,33 @@ public final class Cleaner {
 
             @Override
             public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
-                try {
-                    Files.delete(file);
-                    freed[0] += attrs.size();
-                } catch (IOException e) {
-                    failed.put(file, String.valueOf(e.getMessage()));
-                }
-                return FileVisitResult.CONTINUE;
-            }
-
-            @Override
-            public FileVisitResult visitFileFailed(Path file, IOException exc) {
-                failed.put(file, String.valueOf(exc.getMessage()));
+                if (tryDelete(file) && attrs.isRegularFile()) freed[0] += attrs.size();
                 return FileVisitResult.CONTINUE;
             }
 
             @Override
             public FileVisitResult postVisitDirectory(Path dir, IOException exc) {
-                if (exc != null) {
-                    failed.put(dir, String.valueOf(exc.getMessage()));
-                }
-                try {
-                    Files.delete(dir);
-                } catch (IOException e) {
-                    failed.put(dir, String.valueOf(e.getMessage()));
-                }
+                if (exc != null && first[0] == null) first[0] = exc;
+                tryDelete(dir);
                 return FileVisitResult.CONTINUE;
             }
-        });
-        return freed[0];
+
+            private boolean tryDelete(Path p) {
+                try {
+                    Files.delete(p);
+                    return true;
+                } catch (IOException e) {
+                    if (first[0] == null) first[0] = e;
+                    return false;
+                }
+            }
+            });
+        } catch (IOException e) {
+            if (first[0] == null) first[0] = e;
+        }
+        return new DeleteOutcome(freed[0], first[0]);
     }
+
+    /** Bytes actually deleted plus the first failure, if any; the walk always continues past failures. */
+    private record DeleteOutcome(long freedBytes, IOException failure) { }
 }

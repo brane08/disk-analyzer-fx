@@ -15,13 +15,14 @@ class CacheCatalogTest {
 
     @Test
     void returnsOnlyExistingLocations(@TempDir Path home) throws IOException {
-        Files.createDirectories(home.resolve(".npm"));
+        Files.createDirectories(home.resolve(".npm/_cacache"));
         Files.createDirectories(home.resolve(".m2/repository"));
 
         List<CacheLocation> found = new CacheCatalog(home, Os.MAC).existing();
 
-        assertEquals(List.of("npm", "Maven"), found.stream().map(CacheLocation::label).toList());
-        assertEquals(home.resolve(".npm"), found.get(0).path());
+        assertEquals(List.of("npm", "Maven (also holds locally installed artifacts)"),
+                found.stream().map(CacheLocation::label).toList());
+        assertEquals(home.resolve(".npm/_cacache"), found.get(0).path());
     }
 
     @Test

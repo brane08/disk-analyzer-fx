@@ -2,6 +2,8 @@ package dev.diskanalyzer.cli;
 
 import dev.diskanalyzer.core.DiskScanner;
 import dev.diskanalyzer.core.FileNode;
+import dev.diskanalyzer.core.Os;
+import dev.diskanalyzer.core.ScanHints;
 import dev.diskanalyzer.core.ScanListener;
 import dev.diskanalyzer.core.ScanProgress;
 import picocli.CommandLine.Help.Ansi;
@@ -49,6 +51,9 @@ abstract class BaseCommand implements Callable<Integer> {
             }
         }).scan().orElse(null);
         if (live) System.err.print("\r\033[K");
+        if (root != null && root.skippedDirs() > 0) {
+            err().println("analyzer: " + ScanHints.unreadableMessage(root.skippedDirs(), Os.detect()));
+        }
         return root;
     }
 }

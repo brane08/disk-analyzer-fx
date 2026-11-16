@@ -19,12 +19,12 @@ public final class CacheCatalog {
             case MAC -> {
                 add(home, "Xcode DerivedData", "Library/Developer/Xcode/DerivedData");
                 add(home, "Xcode Simulator Caches", "Library/Developer/CoreSimulator/Caches");
-                add(home, "npm", ".npm");
+                add(home, "npm", ".npm/_cacache");
                 add(home, "Homebrew", "Library/Caches/Homebrew");
                 add(home, "pip", "Library/Caches/pip");
             }
             case LINUX -> {
-                add(home, "npm", ".npm");
+                add(home, "npm", ".npm/_cacache");
                 add(home, "pip", ".cache/pip");
                 add(home, "Yarn", ".cache/yarn");
                 add(home, "Thumbnails", ".cache/thumbnails");
@@ -33,12 +33,11 @@ public final class CacheCatalog {
                 add(home, "npm", "AppData/Local/npm-cache");
                 add(home, "pip", "AppData/Local/pip/Cache");
                 add(home, "NuGet", ".nuget/packages");
-                add(home, "Temp", "AppData/Local/Temp");
             }
         }
         add(home, "Gradle", ".gradle/caches");
-        add(home, "Maven", ".m2/repository");
-        add(home, "Cargo", ".cargo/registry");
+        add(home, "Maven (also holds locally installed artifacts)", ".m2/repository");
+        add(home, "Cargo", ".cargo/registry/cache");
     }
 
     private void add(Path home, String label, String relative) {

@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main, feature/opendisk-style]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The 90% line-coverage gate is enforced on Linux only: POSIX-specific tests are skipped on
+          # Windows, and macOS/Windows still run every test that applies to them.
+          - os: ubuntu-latest
+            mvn-args: ''
+          - os: macos-latest
+            mvn-args: '-Djacoco.skip=true'
+          - os: windows-latest
+            mvn-args: '-Djacoco.skip=true'
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+      - name: Build and test
+        shell: bash
+        run: mvn -B -ntp verify ${{ matrix.mvn-args }}

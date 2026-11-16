@@ -3,6 +3,12 @@ package dev.diskanalyzer.ui;
 import dev.diskanalyzer.core.FileNode;
 
 import javafx.scene.canvas.Canvas;
+import javafx.scene.control.ContextMenu;
+import javafx.scene.control.MenuItem;
+import javafx.scene.input.ClipboardContent;
+import javafx.scene.input.Dragboard;
+import javafx.scene.input.MouseButton;
+import javafx.scene.input.TransferMode;
 import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.layout.Region;
 import javafx.scene.paint.Color;
@@ -28,9 +34,11 @@ public final class SunburstView extends Region {
     private FileNode current;
     private Arc hovered;
     private boolean centerHovered;
+    private boolean dark = true;
 
     private Consumer<FileNode> onDrill = n -> { };
     private Consumer<FileNode> onHover = n -> { };
+    private Consumer<FileNode> onAdd = n -> { };
 
     public SunburstView() {
         getChildren().add(canvas);
@@ -51,7 +59,35 @@ public final class SunburstView extends Region {
             draw();
             onHover.accept(null);
         });
+        canvas.setOnDragDetected(e -> {
+            Arc a = arcAt(e.getX(), e.getY());
+            if (a == null || a.node().parent() == null) return;
+            DragState.node = a.node();
+            ClipboardContent cc = new ClipboardContent();
+            cc.putString(a.node().path().toString());
+            Dragboard db = canvas.startDragAndDrop(TransferMode.COPY);
+            db.setContent(cc);
+            e.consume();
+        });
+        canvas.setOnDragDone(e -> DragState.node = null);
+        MenuItem addItem = new MenuItem("Add to Collector");
+        ContextMenu menu = new ContextMenu(addItem);
+        FileNode[] target = new FileNode[1];
+        addItem.setOnAction(e -> {
+            if (target[0] != null) onAdd.accept(target[0]);
+        });
+        canvas.setOnContextMenuRequested(e -> {
+            Arc a = arcAt(e.getX(), e.getY());
+            if (a == null || a.node().parent() == null) {
+                menu.hide();
+                return;
+            }
+            target[0] = a.node();
+            menu.show(canvas, e.getScreenX(), e.getScreenY());
+            e.consume();
+        });
         canvas.setOnMouseClicked(e -> {
+            if (e.getButton() != MouseButton.PRIMARY) return;
             Arc a = arcAt(e.getX(), e.getY());
             if (a != null) {
                 if (a.node().isDir() && !a.node().children().isEmpty()) onDrill.accept(a.node());
@@ -61,9 +97,16 @@ public final class SunburstView extends Region {
         });
     }
 
+    public void setDark(boolean dark) {
+        this.dark = dark;
+        draw();
+    }
+
     public void setOnDrill(Consumer<FileNode> h) { this.onDrill = h; }
 
     public void setOnHover(Consumer<FileNode> h) { this.onHover = h; }
+
+    public void setOnAddToCollector(Consumer<FileNode> h) { this.onAdd = h; }
 
     public void setCurrent(FileNode node) {
         this.current = node;
@@ -141,7 +184,7 @@ public final class SunburstView extends Region {
 
     private void draw() {
         GraphicsContext g = canvas.getGraphicsContext2D();
-        g.setFill(Color.web("#1e1e1e"));
+        g.setFill(dark ? Color.web("#1e1e1e") : Color.web("#f6f8fa"));
         g.fillRect(0, 0, canvas.getWidth(), canvas.getHeight());
         if (current == null) return;
 
@@ -159,13 +202,14 @@ public final class SunburstView extends Region {
             g.strokeArc(cx - r, cy - r, 2 * r, 2 * r, 90 - a.start() - gap, -(a.sweep() - 2 * gap), ArcType.OPEN);
         }
 
-        g.setFill(centerHovered && current.parent() != null ? Color.web("#3a3a3a") : Color.web("#2a2a2a"));
+        boolean hot = centerHovered && current.parent() != null;
+        g.setFill(dark ? Color.web(hot ? "#3a3a3a" : "#2a2a2a") : Color.web(hot ? "#d0d7de" : "#e6eaef"));
         g.fillOval(cx - centerR() + 2, cy - centerR() + 2, 2 * centerR() - 4, 2 * centerR() - 4);
-        g.setFill(Color.WHITE);
+        g.setFill(dark ? Color.WHITE : Color.web("#1f2328"));
         g.setTextAlign(TextAlignment.CENTER);
         g.setFont(Font.font(Math.max(10, centerR() / 7)));
         g.fillText(current.name(), cx, cy - 4, 2 * centerR() - 16);
-        g.setFill(Color.web("#ffffffaa"));
+        g.setFill(dark ? Color.web("#ffffffaa") : Color.web("#1f2328aa"));
         g.fillText(FileNode.human(current.size()), cx, cy + 14, 2 * centerR() - 16);
         if (current.parent() != null) {
             g.fillText("↑ back", cx, cy + 30, 2 * centerR() - 16);

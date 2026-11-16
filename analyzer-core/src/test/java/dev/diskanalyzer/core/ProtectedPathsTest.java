@@ -8,6 +8,7 @@ import java.nio.file.Path;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+@org.junit.jupiter.api.condition.DisabledOnOs(org.junit.jupiter.api.condition.OS.WINDOWS)
 class ProtectedPathsTest {
     private static final Path HOME = Path.of("/Users/tester");
     private final ProtectedPaths pp = new ProtectedPaths(HOME, Os.MAC);
@@ -91,6 +92,14 @@ class ProtectedPathsTest {
     }
 
     @Test
+    void credentialFoldersStayProtectedEvenInsideAnExemptHome() {
+        org.junit.jupiter.api.Assumptions.assumeTrue(Path.of("/").toString().equals("/"));
+        ProtectedPaths linux = new ProtectedPaths(Path.of("/var/home/me"), Os.LINUX);
+        assertTrue(linux.isProtected(Path.of("/var/home/me/.ssh/id_ed25519")));
+        assertTrue(linux.isProtected(Path.of("/var/home/me/.gnupg/pubring.kbx")));
+    }
+
+    @Test
     void realHomePathIsProtected(@org.junit.jupiter.api.io.TempDir Path tmp) throws Exception {
         Path realHome = tmp.resolve("realHome");
         Files.createDirectories(realHome);
@@ -104,10 +113,12 @@ class ProtectedPathsTest {
     }
 
     @Test
-    void linuxRunMediaContentIsNotProtected() {
+    void linuxRunMediaContentIsNotProtectedButRestOfRunIs() {
         org.junit.jupiter.api.Assumptions.assumeTrue(Path.of("/").toString().equals("/"));
         ProtectedPaths linux = new ProtectedPaths(Path.of("/home/tester"), Os.LINUX);
         assertTrue(linux.isProtected(Path.of("/run")));
+        assertTrue(linux.isProtected(Path.of("/run/media")));
+        assertTrue(linux.isProtected(Path.of("/run/user/1000/bus")));
         assertFalse(linux.isProtected(Path.of("/run/media/user/disk/file")));
     }
 

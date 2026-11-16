@@ -23,8 +23,12 @@ import java.util.concurrent.atomic.AtomicLong;
 public final class DiskScanner {
     private static final int PROGRESS_EVERY = 500;
     private static final int MAX_PARALLEL = 8;
+    private static final long PARTIAL_MIN_INTERVAL_NANOS = 250_000_000L;
+    private long lastPartialNanos = System.nanoTime() - PARTIAL_MIN_INTERVAL_NANOS;
+    private final java.util.concurrent.atomic.AtomicInteger pendingTopLevel =
+            new java.util.concurrent.atomic.AtomicInteger();
 
-    private final Path root;
+    private Path root;
     private final ScanListener listener;
     private final Semaphore permits = new Semaphore(MAX_PARALLEL);
     private final AtomicLong items = new AtomicLong();
@@ -32,9 +36,17 @@ public final class DiskScanner {
     private final AtomicLong skipped = new AtomicLong();
     private volatile boolean cancelled;
 
+    private final ScanExclusions excluded;
+    private boolean partialDirty;
+
     public DiskScanner(Path root, ScanListener listener) {
+        this(root, listener, ScanExclusions.forOs(Os.detect()));
+    }
+
+    DiskScanner(Path root, ScanListener listener, ScanExclusions excluded) {
         this.root = root;
         this.listener = listener;
+        this.excluded = excluded;
     }
 
     public void cancel() {
@@ -45,9 +57,16 @@ public final class DiskScanner {
         if (!Files.exists(root, LinkOption.NOFOLLOW_LINKS)) {
             throw new IllegalArgumentException("Path does not exist: " + root);
         }
+        if (Files.isSymbolicLink(root)) {
+            try {
+                root = root.toRealPath();
+            } catch (IOException | SecurityException e) {
+                return Optional.empty();
+            }
+        }
         BasicFileAttributes attrs = readAttributes(root);
         if (attrs == null) return Optional.empty();
-        FileNode result = isTraversableDirectory(attrs) ? scanRoot() : scan(root, null);
+        FileNode result = attrs.isDirectory() && !Cleaner.isLinkLike(root, attrs) ? scanRoot() : scan(root, null);
         return cancelled ? Optional.empty() : Optional.ofNullable(result);
     }
 
@@ -61,6 +80,8 @@ public final class DiskScanner {
             skipped.incrementAndGet();
         }
 
+        pendingTopLevel.set(children.size());
+        Thread flusher = Thread.ofVirtual().name("scan-partial-flush").start(() -> flushLoop(rootNode));
         try (ExecutorService pool = Executors.newVirtualThreadPerTaskExecutor()) {
             List<Future<?>> futures = new ArrayList<>();
             for (Path child : children) {
@@ -74,8 +95,17 @@ public final class DiskScanner {
                     Thread.currentThread().interrupt();
                     break;
                 } catch (ExecutionException e) {
+                    cancelled = true; // stop the other workers instead of letting them scan to the end
                     throw new IllegalStateException(e.getCause());
                 }
+            }
+        } finally {
+            flusher.interrupt();
+            try {
+                flusher.join();
+            } catch (InterruptedException e) {
+                cancelled = true;
+                Thread.currentThread().interrupt();
             }
         }
         rootNode.sortChildren();
@@ -96,12 +126,42 @@ public final class DiskScanner {
         } finally {
             permits.release();
         }
-        if (node == null || cancelled) return;
         synchronized (rootNode) {
-            rootNode.addChild(node);
-            FileNode snapshot = rootNode.copy(null);
-            snapshot.sortChildren();
-            listener.onPartial(snapshot);
+            boolean add = node != null && !cancelled;
+            if (add) rootNode.addChild(node);
+            boolean last = pendingTopLevel.decrementAndGet() == 0;
+            if (!add) return;
+            if (last || System.nanoTime() - lastPartialNanos >= PARTIAL_MIN_INTERVAL_NANOS) {
+                emitPartial(rootNode);
+            } else {
+                partialDirty = true;
+            }
+        }
+    }
+
+    /** Must be called holding the rootNode lock. */
+    private void emitPartial(FileNode rootNode) {
+        lastPartialNanos = System.nanoTime();
+        partialDirty = false;
+        FileNode snapshot = rootNode.copy(null);
+        snapshot.sortChildren();
+        listener.onPartial(snapshot);
+    }
+
+    /** Publishes a suppressed partial once the throttle interval has passed, so slow stragglers don't hide finished work. */
+    private void flushLoop(FileNode rootNode) {
+        while (!Thread.currentThread().isInterrupted()) {
+            try {
+                Thread.sleep(PARTIAL_MIN_INTERVAL_NANOS / 1_000_000L);
+            } catch (InterruptedException e) {
+                return;
+            }
+            synchronized (rootNode) {
+                if (partialDirty && !cancelled
+                        && System.nanoTime() - lastPartialNanos >= PARTIAL_MIN_INTERVAL_NANOS) {
+                    emitPartial(rootNode);
+                }
+            }
         }
     }
 
@@ -116,9 +176,13 @@ public final class DiskScanner {
             listener.onProgress(new ScanProgress(n, bytes.get(), skipped.get(), p));
         }
 
-        if (!isTraversableDirectory(attrs)) {
-            bytes.addAndGet(attrs.size());
-            return new FileNode(name, p, false, parent, attrs.size());
+        if (!attrs.isDirectory() || Cleaner.isLinkLike(p, attrs)) {
+            long size = attrs.isDirectory() ? 0 : attrs.size();
+            bytes.addAndGet(size);
+            return new FileNode(name, p, false, parent, size);
+        }
+        if (!p.equals(root) && excluded.contains(p)) {
+            return new FileNode(name, p, true, parent, 0);
         }
 
         FileNode node = new FileNode(name, p, true, parent, 0);
@@ -142,11 +206,6 @@ public final class DiskScanner {
         } catch (IOException | SecurityException e) {
             return null;
         }
-    }
-
-    /** Directories that are symlinks or "other" (e.g. Windows junctions) are leaves — never entered. */
-    static boolean isTraversableDirectory(BasicFileAttributes attrs) {
-        return attrs.isDirectory() && !attrs.isSymbolicLink() && !attrs.isOther();
     }
 
     private static String nameOf(Path p) {

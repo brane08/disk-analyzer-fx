@@ -14,6 +14,7 @@ public final class FileNode {
     private long size;
     private long fileCount;
     private long skippedDirs;
+    private boolean unreadable;
 
     public FileNode(String name, Path path, boolean dir, FileNode parent, long size) {
         this.name = name;
@@ -39,11 +40,30 @@ public final class FileNode {
         }
         c.fileCount = fileCount;
         c.skippedDirs = skippedDirs;
+        c.unreadable = unreadable;
         return c;
     }
 
     public void markUnreadable() {
         skippedDirs++;
+        unreadable = true;
+    }
+
+    public boolean isUnreadable() { return unreadable; }
+
+    /** Paths of folders that could not be read, in tree order, at most {@code limit}. */
+    public List<Path> unreadableFolders(int limit) {
+        List<Path> found = new ArrayList<>();
+        java.util.ArrayDeque<FileNode> stack = new java.util.ArrayDeque<>();
+        stack.push(this);
+        while (!stack.isEmpty() && found.size() < limit) {
+            FileNode n = stack.pop();
+            if (n.unreadable) found.add(n.path);
+            if (n.skippedDirs > (n.unreadable ? 1 : 0)) {
+                for (int i = n.children.size() - 1; i >= 0; i--) stack.push(n.children.get(i));
+            }
+        }
+        return found;
     }
 
     public void sortChildren() {

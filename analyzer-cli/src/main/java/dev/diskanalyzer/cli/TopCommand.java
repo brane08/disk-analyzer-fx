@@ -18,8 +18,19 @@ public final class TopCommand extends BaseCommand {
     @Option(names = "--dirs", description = "List folders instead of files.")
     boolean dirs;
 
+    @Option(names = "--files", description = "List files (the default); cannot be combined with --dirs.")
+    boolean files;
+
     @Override
     public Integer call() {
+        if (files && dirs) {
+            err().println("analyzer: --files and --dirs cannot be combined");
+            return EXIT_BAD_PATH;
+        }
+        if (limit < 0) {
+            err().println("analyzer: -n must not be negative");
+            return EXIT_BAD_PATH;
+        }
         FileNode root = scan(path);
         if (root == null) return EXIT_BAD_PATH;
         out().print(Render.top(root, !dirs, limit, ansi()));

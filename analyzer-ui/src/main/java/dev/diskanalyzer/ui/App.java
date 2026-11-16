@@ -1,6 +1,7 @@
 package dev.diskanalyzer.ui;
 
 import atlantafx.base.theme.PrimerDark;
+import atlantafx.base.theme.PrimerLight;
 import dev.diskanalyzer.core.CacheCatalog;
 import dev.diskanalyzer.core.Cleaner;
 import dev.diskanalyzer.core.Collector;
@@ -22,6 +23,7 @@ import javafx.scene.control.Tab;
 import javafx.scene.control.TabPane;
 import javafx.scene.control.TreeItem;
 import javafx.scene.control.TreeTableColumn;
+import javafx.scene.control.Tooltip;
 import javafx.scene.control.TreeTableView;
 import javafx.scene.input.ClipboardContent;
 import javafx.scene.input.Dragboard;
@@ -41,6 +43,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.function.Consumer;
+import java.util.prefs.Preferences;
 
 public final class App extends Application {
     private Stage stage;
@@ -54,7 +57,10 @@ public final class App extends Application {
     private final Button scanBtn = new Button("Scan folder…", Icons.of("mdi2f-folder-search-outline"));
     private final Button cancelBtn = new Button("Cancel", Icons.of("mdi2c-close-circle-outline"));
     private final SearchBox search = new SearchBox();
-    private FdaBanner banner;
+    private static final Preferences PREFS = Preferences.userNodeForPackage(App.class);
+    private static final String DARK_KEY = "darkTheme";
+    private final Button themeBtn = new Button("", Icons.of("mdi2t-theme-light-dark"));
+    private UnreadableBanner banner;
     private CollectorPane collectorPane;
     private FileNode view;
     private boolean syncing;
@@ -62,12 +68,17 @@ public final class App extends Application {
     @Override
     public void start(Stage stage) {
         this.stage = stage;
-        Application.setUserAgentStylesheet(new PrimerDark().getUserAgentStylesheet());
+        applyTheme(PREFS.getBoolean(DARK_KEY, true));
+        themeBtn.setOnAction(e -> {
+            boolean dark = !PREFS.getBoolean(DARK_KEY, true);
+            PREFS.putBoolean(DARK_KEY, dark);
+            applyTheme(dark);
+        });
 
         Path home = Path.of(System.getProperty("user.home"));
         collectorPane = new CollectorPane(collector, new Cleaner(new ProtectedPaths(home)), this::rescanLast);
         CachesPane cachesPane = new CachesPane(new CacheCatalog(home), collectorPane::add);
-        banner = new FdaBanner(getHostServices());
+        banner = new UnreadableBanner(getHostServices());
 
         progress.setPrefWidth(120);
         progress.setVisible(false);
@@ -75,7 +86,7 @@ public final class App extends Application {
         search.setPrefWidth(260);
         Region spacer = new Region();
         HBox.setHgrow(spacer, Priority.ALWAYS);
-        HBox bar = new HBox(8, scanBtn, cancelBtn, spacer, progress, search);
+        HBox bar = new HBox(8, scanBtn, cancelBtn, spacer, progress, search, themeBtn);
         bar.setPadding(new Insets(8));
 
         crumbs.setAutoNavigationEnabled(false);
@@ -116,6 +127,7 @@ public final class App extends Application {
         };
         sunburst.setOnDrill(this::select);
         sunburst.setOnHover(hover);
+        sunburst.setOnAddToCollector(collectorPane::add);
         search.setOnPick(this::select);
 
         scan.runningProperty().addListener((o, was, now) -> {
@@ -137,6 +149,13 @@ public final class App extends Application {
         stage.show();
     }
 
+    private void applyTheme(boolean dark) {
+        Application.setUserAgentStylesheet(
+                (dark ? new PrimerDark() : new PrimerLight()).getUserAgentStylesheet());
+        sunburst.setDark(dark);
+        themeBtn.setTooltip(new Tooltip(dark ? "Switch to light theme" : "Switch to dark theme"));
+    }
+
     private Path lastPath;
 
     private void chooseAndScan() {
@@ -150,7 +169,10 @@ public final class App extends Application {
     }
 
     private void rescanLast() {
-        if (lastPath != null) scan.start(lastPath);
+        if (scan.runningProperty().get()) return; // don't cancel a scan the user started meanwhile
+        Path p = lastPath;
+        while (p != null && !java.nio.file.Files.isDirectory(p)) p = p.getParent();
+        if (p != null) scan.start(p);
     }
 
     private void onRoot(FileNode root) {
@@ -160,19 +182,33 @@ public final class App extends Application {
             sunburst.setCurrent(null);
             crumbs.setSelectedCrumb(null);
             search.setIndex(null);
-            banner.update(0);
+            banner.update(null);
             return;
         }
         boolean scanning = scan.runningProperty().get();
-        if (scanning && view != null && view.parent() != null) {
-            return; // user drilled down mid-scan: don't yank the view back to the root on every partial
-        }
+        // A new scan clears the root first, which resets view and selection, so anything still set here
+        // belongs to this scan and is carried over to the final result too.
+        Path viewPath = view != null ? view.path() : null;
+        TreeItem<FileNode> selected = table.getSelectionModel().getSelectedItem();
+        Path selectedPath = selected != null ? selected.getValue().path() : null;
+
         FileTreeItem rootItem = new FileTreeItem(root);
         rootItem.setExpanded(true);
-        table.setRoot(rootItem);
-        show(root);
-        banner.update(root.skippedDirs());
+        syncing = true;
+        try {
+            table.setRoot(rootItem);
+        } finally {
+            syncing = false;
+        }
+        FileNode viewNode = viewPath == null ? null : findByPath(root, viewPath);
+        show(viewNode != null ? viewNode : root);
+        if (selectedPath != null) {
+            FileNode sel = findByPath(root, selectedPath);
+            if (sel != null) selectInTable(sel, false);
+        }
+        banner.update(root);
         if (!scan.runningProperty().get()) {
+            collectorPane.retarget(root);
             search.setIndex(SearchIndex.of(root));
             status.setText(root.fileCount() + " files, " + FileNode.human(root.size()) + " in " + root.path());
         }
@@ -244,9 +280,32 @@ public final class App extends Application {
         crumbs.setSelectedCrumb(crumb);
     }
 
+    private static FileNode findByPath(FileNode root, Path p) {
+        if (root.path().equals(p)) return root;
+        if (!p.startsWith(root.path())) return null;
+        FileNode n = root;
+        outer:
+        while (true) {
+            for (FileNode c : n.children()) {
+                if (p.equals(c.path())) return c;
+                if (p.startsWith(c.path())) {
+                    n = c;
+                    continue outer;
+                }
+            }
+            return null;
+        }
+    }
+
     /** Select node in the table (expanding ancestors) and show its folder in the sunburst. */
     private void select(FileNode node) {
-        if (table.getRoot() == null) return;
+        if (!selectInTable(node, true)) return;
+        show(node.isDir() ? node : node.parent());
+    }
+
+    /** Selects node in the table, expanding ancestors, without touching the sunburst. */
+    private boolean selectInTable(FileNode node, boolean scroll) {
+        if (table.getRoot() == null) return false;
         List<FileNode> chain = new ArrayList<>();
         for (FileNode n = node; n != null; n = n.parent()) chain.add(n);
         Collections.reverse(chain);
@@ -261,20 +320,25 @@ public final class App extends Application {
                     break;
                 }
             }
-            if (next == null) return;
+            if (next == null) return false;
             item = next;
         }
         syncing = true;
         try {
             table.getSelectionModel().select(item);
-            table.scrollTo(table.getRow(item));
+            if (scroll) table.scrollTo(table.getRow(item));
         } finally {
             syncing = false;
         }
-        show(node.isDir() ? node : node.parent());
+        return true;
     }
 
     public static void main(String[] args) {
+        dev.diskanalyzer.core.UiScale.override(
+                System.getProperty("glass.gtk.uiScale"),
+                System.getProperty("diskanalyzer.uiScale"),
+                System.getenv("DISKANALYZER_UI_SCALE"))
+                .ifPresent(v -> System.setProperty("glass.gtk.uiScale", v));
         launch(args);
     }
 }
